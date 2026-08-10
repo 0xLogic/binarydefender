@@ -1,0 +1,9 @@
+/target
+/window.dat
+/imgui.ini
+/dashboard/node_modules
+/dashboard/dist
+/dashboard/package-lock.json
+*.txt
+*.exe
+*.pdb

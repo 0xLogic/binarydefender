@@ -1,0 +1,105 @@
+:root {
+  --bg-dark: #08090b;
+  --bg-panel: #101115;
+  --bg-panel-header: #15171c;
+  --sentinel-blue: #00b0ff;
+  --sentinel-blue-dim: rgba(0, 176, 255, 0.08);
+  --border-blue: rgba(0, 176, 255, 0.35);
+  --border-muted: rgba(255, 255, 255, 0.06);
+  --text-primary: #e2e8f0;
+  --text-muted: #8892b0;
+  --text-green: #00e676;
+  --text-input: #ffffff;
+  --text-type-label: #1b2430;
+}
+
+/* Highly Polished Light Theme (Sleek Industrial Slate/Concrete CAD Style) */
+.light-theme {
+  --bg-dark: #b8c2cc;             /* Deep slate-grey industrial background */
+  --bg-panel: #d2dbe5;            /* Solid light concrete panels for structural contrast */
+  --bg-panel-header: #a4b3be;     /* Darker grey panel header caps */
+  --sentinel-blue: #004ba0;       /* High-contrast dark cobalt blue accents */
+  --sentinel-blue-dim: rgba(0, 75, 160, 0.08);
+  --border-blue: #8a9ba8;         /* Solid carbon/grey borders */
+  --border-muted: #9eb1c0;        /* Muted concrete dividers */
+  --text-primary: #151b26;        /* Pure obsidian black primary text */
+  --text-muted: #42526e;          /* Rich slate/charcoal muted text */
+  --text-green: #1b5e20;          /* Deep forest green for success indicator frames */
+  --text-input: #151b26;          /* Obsidian text inside select inputs */
+  --text-type-label: #8a9ba8;     /* Inverted label background */
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-dark);
+  color: var(--text-primary);
+  font-family: 'Share Tech Mono', monospace;
+  overflow-x: hidden;
+  height: 100vh;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Scrollbars styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-dark);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-blue);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--sentinel-blue);
+}
+
+/* Pulsing HUD dots */
+.pulse-indicator {
+  width: 8px;
+  height: 8px;
+  background-color: var(--sentinel-blue);
+  border-radius: 50%;
+  box-shadow: 0 0 10px var(--sentinel-blue);
+  display: inline-block;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 var(--border-blue);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 8px rgba(0, 176, 255, 0);
+  }
+  100% {
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 rgba(0, 176, 255, 0);
+  }
+}
+
+.dashed-box {
+  border: 1px dashed var(--border-blue);
+  background-color: var(--bg-panel);
+  position: relative;
+  transition: border-color 0.2s ease, background-color 0.2s ease, color 0.2s ease;
+}
+
+.dashed-box::before {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  right: -4px;
+  bottom: -4px;
+  border: 1px solid rgba(0, 176, 255, 0.01);
+  pointer-events: none;
+}
