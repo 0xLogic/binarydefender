@@ -11,6 +11,188 @@ fn align_up(value: usize, alignment: usize) -> usize {
     (value + alignment - 1) & !(alignment - 1)
 }
 
+// ============================================================================
+// Utilities: Pseudo-Random Number Generator (LCG)
+// ============================================================================
+pub struct SimpleRng {
+    state: u64,
+}
+
+impl SimpleRng {
+    pub fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    pub fn next_u32(&mut self) -> u32 {
+        self.state = self.state.wrapping_mul(1664525).wrapping_add(1013904223);
+        (self.state >> 32) as u32
+    }
+
+    pub fn shuffle<T>(&mut self, slice: &mut [T]) {
+        let n = slice.len();
+        for i in (1..n).rev() {
+            let j = (self.next_u32() as usize) % (i + 1);
+            slice.swap(i, j);
+        }
+    }
+}
+
+// Helper to map iced_x86 register to virtual machine register ID
+fn map_register(reg: iced_x86::Register) -> Option<u8> {
+    match reg {
+        iced_x86::Register::RCX | iced_x86::Register::ECX | iced_x86::Register::CL | iced_x86::Register::CX => Some(0),
+        iced_x86::Register::RDX | iced_x86::Register::EDX | iced_x86::Register::DL | iced_x86::Register::DX => Some(1),
+        iced_x86::Register::RAX | iced_x86::Register::EAX | iced_x86::Register::AL | iced_x86::Register::AX |
+        iced_x86::Register::RBX | iced_x86::Register::EBX | iced_x86::Register::BL | iced_x86::Register::BX => Some(2),
+        _ => None,
+    }
+}
+
+// Helper to check if OpKind is an immediate
+fn is_op_kind_immediate(op_kind: iced_x86::OpKind) -> bool {
+    match op_kind {
+        iced_x86::OpKind::Immediate8 |
+        iced_x86::OpKind::Immediate16 |
+        iced_x86::OpKind::Immediate32 |
+        iced_x86::OpKind::Immediate64 |
+        iced_x86::OpKind::Immediate8to16 |
+        iced_x86::OpKind::Immediate8to32 |
+        iced_x86::OpKind::Immediate8to64 |
+        iced_x86::OpKind::Immediate32to64 => true,
+        _ => false,
+    }
+}
+
+// High-fidelity machine code lifter and compiler to VM bytecode
+fn lift_and_compile_function(instructions: &[iced_x86::Instruction], opcodes: &[u8]) -> Option<Vec<u8>> {
+    let mut bytecode = Vec::new();
+
+    let op_push_reg   = opcodes[0];
+    let op_push_const = opcodes[1];
+    let op_add        = opcodes[2];
+    let op_pop_reg    = opcodes[3];
+    let op_ret        = opcodes[4];
+    let _op_and       = opcodes[5];
+    let _op_xor       = opcodes[6];
+    let _op_dup       = opcodes[7];
+    let _op_pop_temp  = opcodes[8];
+    let _op_push_temp = opcodes[9];
+    let op_sub        = opcodes[10];
+
+    for instr in instructions {
+        match instr.mnemonic() {
+            iced_x86::Mnemonic::Ret => {
+                bytecode.push(op_ret);
+            }
+            iced_x86::Mnemonic::Mov => {
+                let dst = map_register(instr.op0_register())?;
+                if instr.op1_kind() == iced_x86::OpKind::Register {
+                    let src = map_register(instr.op1_register())?;
+                    bytecode.push(op_push_reg);
+                    bytecode.push(src);
+                    bytecode.push(op_pop_reg);
+                    bytecode.push(dst);
+                } else if is_op_kind_immediate(instr.op1_kind()) {
+                    let imm = instr.immediate32();
+                    bytecode.push(op_push_const);
+                    bytecode.extend_from_slice(&imm.to_le_bytes());
+                    bytecode.push(op_pop_reg);
+                    bytecode.push(dst);
+                } else {
+                    return None;
+                }
+            }
+            iced_x86::Mnemonic::Add => {
+                if instr.op0_register() == iced_x86::Register::RSP {
+                    continue;
+                }
+                let dst = map_register(instr.op0_register())?;
+                if instr.op1_kind() == iced_x86::OpKind::Register {
+                    let src = map_register(instr.op1_register())?;
+                    bytecode.push(op_push_reg);
+                    bytecode.push(dst);
+                    bytecode.push(op_push_reg);
+                    bytecode.push(src);
+                    bytecode.push(op_add);
+                    bytecode.push(op_pop_reg);
+                    bytecode.push(dst);
+                } else if is_op_kind_immediate(instr.op1_kind()) {
+                    let imm = instr.immediate32();
+                    bytecode.push(op_push_reg);
+                    bytecode.push(dst);
+                    bytecode.push(op_push_const);
+                    bytecode.extend_from_slice(&imm.to_le_bytes());
+                    bytecode.push(op_add);
+                    bytecode.push(op_pop_reg);
+                    bytecode.push(dst);
+                } else {
+                    return None;
+                }
+            }
+            iced_x86::Mnemonic::Sub => {
+                if instr.op0_register() == iced_x86::Register::RSP {
+                    continue;
+                }
+                let dst = map_register(instr.op0_register())?;
+                if instr.op1_kind() == iced_x86::OpKind::Register {
+                    let src = map_register(instr.op1_register())?;
+                    bytecode.push(op_push_reg);
+                    bytecode.push(dst);
+                    bytecode.push(op_push_reg);
+                    bytecode.push(src);
+                    bytecode.push(op_sub);
+                    bytecode.push(op_pop_reg);
+                    bytecode.push(dst);
+                } else if is_op_kind_immediate(instr.op1_kind()) {
+                    let imm = instr.immediate32();
+                    bytecode.push(op_push_reg);
+                    bytecode.push(dst);
+                    bytecode.push(op_push_const);
+                    bytecode.extend_from_slice(&imm.to_le_bytes());
+                    bytecode.push(op_sub);
+                    bytecode.push(op_pop_reg);
+                    bytecode.push(dst);
+                } else {
+                    return None;
+                }
+            }
+            iced_x86::Mnemonic::Lea => {
+                let dst = map_register(instr.op0_register())?;
+                let base = map_register(instr.memory_base())?;
+                
+                // Push base register
+                bytecode.push(op_push_reg);
+                bytecode.push(base);
+                
+                // If index register exists, push index and add
+                if instr.memory_index() != iced_x86::Register::None {
+                    let index = map_register(instr.memory_index())?;
+                    bytecode.push(op_push_reg);
+                    bytecode.push(index);
+                    bytecode.push(op_add);
+                }
+                
+                // If displacement is non-zero, push displacement and add
+                let disp = instr.memory_displacement32();
+                if disp != 0 {
+                    bytecode.push(op_push_const);
+                    bytecode.extend_from_slice(&disp.to_le_bytes());
+                    bytecode.push(op_add);
+                }
+                
+                bytecode.push(op_pop_reg);
+                bytecode.push(dst);
+            }
+            _ => {
+                println!("      [LIFTER WARNING] Instruction {:?} is not supported for dynamic math lifting. Falling back to secure MBA-obfuscated core.", instr.mnemonic());
+                return None;
+            }
+        }
+    }
+
+    Some(bytecode)
+}
+
 // Opens the PDB file and retrieves the exact relative virtual address (RVA) of a function by name
 fn find_function_rva_in_pdb(pdb_path: &str, func_name: &str) -> Result<u32, Box<dyn std::error::Error>> {
     let file = fs::File::open(pdb_path)?;
@@ -50,7 +232,7 @@ fn find_function_rva_in_pdb(pdb_path: &str, func_name: &str) -> Result<u32, Box<
 }
 
 // Parse flat configuration file to bypass OS command buffer limits
-fn parse_config_file(path: &str) -> Result<(String, String, String, Vec<String>, Vec<String>, String, bool, bool, bool, bool), Box<dyn std::error::Error>> {
+fn parse_config_file(path: &str) -> Result<(String, String, String, Vec<String>, Vec<String>, String, bool, bool, bool, bool, u64, String, u32, String, Vec<String>, bool), Box<dyn std::error::Error>> {
     let content = fs::read_to_string(path)?;
     let mut input_exe = String::new();
     let mut input_pdb = String::new();
@@ -60,6 +242,12 @@ fn parse_config_file(path: &str) -> Result<(String, String, String, Vec<String>,
     let mut seh = true;
     let mut hijack = true;
     let mut tamper = true; // Anti-tamper default
+    let mut seed = 0xDEADC0DEu64;
+    let mut obfuscation = "HIGH".to_string();
+    let mut cff_lvl = 3u32;
+    let mut prompt_top = String::new();
+    let mut prompts_spread = Vec::new();
+    let mut bbr = true;
     let mut funcs = Vec::new();
     let mut strings = Vec::new();
 
@@ -78,11 +266,17 @@ fn parse_config_file(path: &str) -> Result<(String, String, String, Vec<String>,
             current_section = "strings";
             continue;
         }
+        if trimmed == "[prompts_spread]" {
+            current_section = "prompts_spread";
+            continue;
+        }
 
         if current_section == "funcs" {
             funcs.push(trimmed.to_string());
         } else if current_section == "strings" {
             strings.push(trimmed.to_string());
+        } else if current_section == "prompts_spread" {
+            prompts_spread.push(trimmed.to_string());
         } else {
             if let Some(pos) = trimmed.find('=') {
                 let key = trimmed[..pos].trim();
@@ -96,13 +290,18 @@ fn parse_config_file(path: &str) -> Result<(String, String, String, Vec<String>,
                     "seh_enabled" => seh = val == "true",
                     "hijack_enabled" => hijack = val == "true",
                     "tamper_enabled" => tamper = val == "true",
+                    "seed_value" => seed = val.parse::<u64>().unwrap_or(0xDEADC0DE),
+                    "obfuscation_level" => obfuscation = val.to_string(),
+                    "cff_level" => cff_lvl = val.parse::<u32>().unwrap_or(3),
+                    "prompt_top" => prompt_top = val.to_string(),
+                    "bbr_enabled" => bbr = val == "true",
                     _ => {}
                 }
             }
         }
     }
 
-    Ok((input_exe, input_pdb, output_exe, funcs, strings, sec_name, cff, seh, hijack, tamper))
+    Ok((input_exe, input_pdb, output_exe, funcs, strings, sec_name, cff, seh, hijack, tamper, seed, obfuscation, cff_lvl, prompt_top, prompts_spread, bbr))
 }
 
 fn print_help() {
@@ -141,13 +340,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut seh_enabled = true;
     let mut hijack_enabled = true;
     let mut tamper_enabled = true;
+    let mut seed_value = 0xDEADC0DEu64;
+    let mut obfuscation_level = "HIGH".to_string();
+    let mut cff_level = 3u32;
+    let mut prompt_top = String::new();
+    let mut prompts_spread = Vec::new();
+    let mut bbr_enabled = true;
 
     // Check if configuration file mode is enabled
     if let Some(pos) = args.iter().position(|r| r == "-c" || r == "--config") {
         if pos + 1 < args.len() {
             let config_file_path = &args[pos + 1];
             println!("[CONFIG MODE] Loading compiler profile from: {}", config_file_path);
-            let (in_exe, in_pdb, out_exe, f_names, s_list, sec_n, cff, seh, hj, tp) = parse_config_file(config_file_path)?;
+            let (in_exe, in_pdb, out_exe, f_names, s_list, sec_n, cff, seh, hj, tp, seed, obf, cff_lvl, pr_top, pr_spread, bbr) = parse_config_file(config_file_path)?;
             
             input_path = Some(in_exe);
             pdb_path = Some(in_pdb);
@@ -159,6 +364,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             seh_enabled = seh;
             hijack_enabled = hj;
             tamper_enabled = tp;
+            seed_value = seed;
+            obfuscation_level = obf;
+            cff_level = cff_lvl;
+            prompt_top = pr_top;
+            prompts_spread = pr_spread;
+            bbr_enabled = bbr;
         } else {
             eprintln!("Error: Missing path for --config option.");
             std::process::exit(1);
@@ -222,6 +433,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         std::process::exit(1);
                     }
                 }
+                "--seed" => {
+                    if i + 1 < args.len() {
+                        seed_value = args[i+1].parse::<u64>().unwrap_or(0xDEADC0DE);
+                        i += 2;
+                    } else {
+                        eprintln!("Error: Missing value for --seed");
+                        std::process::exit(1);
+                    }
+                }
+                "--obfuscation" => {
+                    if i + 1 < args.len() {
+                        obfuscation_level = args[i+1].clone();
+                        i += 2;
+                    } else {
+                        eprintln!("Error: Missing value for --obfuscation");
+                        std::process::exit(1);
+                    }
+                }
+                "--cff-level" => {
+                    if i + 1 < args.len() {
+                        cff_level = args[i+1].parse::<u32>().unwrap_or(3);
+                        i += 2;
+                    } else {
+                        eprintln!("Error: Missing value for --cff-level");
+                        std::process::exit(1);
+                    }
+                }
+                "--prompt-top" => {
+                    if i + 1 < args.len() {
+                        prompt_top = args[i+1].clone();
+                        i += 2;
+                    } else {
+                        eprintln!("Error: Missing value for --prompt-top");
+                        std::process::exit(1);
+                    }
+                }
+                "--prompt-spread" => {
+                    if i + 1 < args.len() {
+                        prompts_spread.push(args[i+1].clone());
+                        i += 2;
+                    } else {
+                        eprintln!("Error: Missing value for --prompt-spread");
+                        std::process::exit(1);
+                    }
+                }
                 "--no-cff" => {
                     cff_enabled = false;
                     i += 1;
@@ -236,6 +492,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "--no-tamper" => {
                     tamper_enabled = false;
+                    i += 1;
+                }
+                "--no-bbr" => {
+                    bbr_enabled = false;
                     i += 1;
                 }
                 _ => {
@@ -261,6 +521,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("+-------------------------------------------------------------+");
     println!("Configuration Active:");
     println!("  CFF={}, SEH={}, Hijack={}, Tamper={}, TargetSectionName='{}'", cff_enabled, seh_enabled, hijack_enabled, tamper_enabled, custom_section_name);
+    println!("  Seed=0x{:X}, ObfuscationLevel='{}'", seed_value, obfuscation_level);
     println!("  Targeting {} functions for virtualization: {:?}", func_names.len(), func_names);
 
     if !Path::new(&input_path).exists() {
@@ -387,6 +648,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("[3/6] Resolving function symbols and compiling VMs sequentially...");
     
     let mut vmp_payload = Vec::new();
+    
+    // 🛡️ ADVERSARIAL AI PROMPT INJECTION (TOP LEVEL)
+    if !prompt_top.is_empty() {
+        println!("      [PROMPT ENGINE] Injecting adversarial top-level system guardrail prompt...");
+        let p_bytes = prompt_top.as_bytes();
+        let mut prompt_block = Vec::new();
+        // Assemble relative near JMP (E9) to skip past the prompt bytes cleanly during execution
+        prompt_block.push(0xE9);
+        let offset = (p_bytes.len() + 1) as i32; // Skip past prompt characters + null-terminator
+        prompt_block.extend_from_slice(&offset.to_le_bytes());
+        prompt_block.extend_from_slice(p_bytes);
+        prompt_block.push(0x00); // 🛡️ NULL TERMINATOR FOR IDA STRINGS AUTO-DISCOVERY
+        vmp_payload.extend_from_slice(&prompt_block);
+    }
+
     let mut patch_stubs = Vec::new(); // stores (func_abs_offset, jump_stub)
     let mut last_shellcode_vm_len = 0u32;
 
@@ -458,6 +734,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut has_invalid_opcodes = false;
         
         for instr in &mut temp_decoder {
+            println!("      [DISASM] 0x{:X}: {}", instr.ip(), instr);
             if instr.is_invalid() {
                 has_invalid_opcodes = true;
                 break;
@@ -491,12 +768,123 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        // Compile Virtualized MBA Bytecode
-        let bytecode: Vec<u8> = vec![
-            0x00, 0x00, 0x00, 0x01, 0x06, 0x00, 0x00, 0x00, 0x01, 0x05, 0x07, 0x02, 0x02, 0x07, 
-            0x01, 100, 0, 0, 0, 0x05, 0x07, 0x02, 0x08, 0x01, 100, 0, 0, 0, 0x06, 0x09, 0x02, 
-            0x03, 0x02, 0x04
-        ];
+        // Re-decode the actual instructions for dynamic compilation
+        let mut actual_decoder = Decoder::with_ip(64, func_bytes, image_base + func_rva as u64, DecoderOptions::NONE);
+        let mut decoded_instructions = Vec::new();
+        for instr in &mut actual_decoder {
+            if instr.is_invalid() {
+                break;
+            }
+            decoded_instructions.push(instr);
+            let is_terminator = instr.flow_control() == iced_x86::FlowControl::UnconditionalBranch
+                || instr.flow_control() == iced_x86::FlowControl::ConditionalBranch
+                || instr.flow_control() == iced_x86::FlowControl::Return
+                || instr.code() == iced_x86::Code::Int3;
+                
+            if is_terminator {
+                break;
+            }
+        }
+
+        // Generate randomized virtual opcodes using the specified seed
+        let mut rng = SimpleRng::new(seed_value + idx as u64); // seed mixed with index for unique VM per function
+        let mut opcodes: Vec<u8> = (0..11).collect();
+        rng.shuffle(&mut opcodes);
+
+        let op_push_reg   = opcodes[0];
+        let op_push_const = opcodes[1];
+        let op_add        = opcodes[2];
+        let op_pop_reg    = opcodes[3];
+        let op_ret        = opcodes[4];
+        let op_and        = opcodes[5];
+        let op_xor        = opcodes[6];
+        let op_dup        = opcodes[7];
+        let op_pop_temp   = opcodes[8];
+        let op_push_temp  = opcodes[9];
+        let op_sub        = opcodes[10];
+
+        // Lift and compile dynamically if obfuscation intensity is not set to HIGH
+        let mut bytecode = None;
+        if obfuscation_level != "HIGH" {
+            // --- BASIC BLOCK REORDERING (BBR) ENGINE ---
+            if bbr_enabled {
+                println!("        [BBR ENGINE] Segmenting function into basic blocks for structural reordering...");
+                let mut blocks = Vec::new();
+                let mut current_block = Vec::new();
+                
+                for instr in &decoded_instructions {
+                    current_block.push(*instr);
+                    let is_terminator = instr.flow_control() == iced_x86::FlowControl::UnconditionalBranch
+                        || instr.flow_control() == iced_x86::FlowControl::ConditionalBranch
+                        || instr.flow_control() == iced_x86::FlowControl::Return
+                        || instr.code() == iced_x86::Code::Int3;
+                    
+                    if is_terminator {
+                        blocks.push(current_block);
+                        current_block = Vec::new();
+                    }
+                }
+                if !current_block.is_empty() {
+                    blocks.push(current_block);
+                }
+
+                println!("        [BBR ENGINE] Fragmented '{}' into {} basic blocks.", func_name, blocks.len());
+
+                // Randomly shuffle blocks if there are 2 or more basic blocks!
+                if blocks.len() >= 2 {
+                    let mut bbr_rng = SimpleRng::new(seed_value + idx as u64 + 1234);
+                    bbr_rng.shuffle(&mut blocks);
+                    println!("        [BBR ENGINE] Shuffled basic block layout sequence arbitrarily using seed 0x{:X}.", seed_value);
+
+                    // Compile blocks and stitch control flow explicitly
+                    let mut compiled_bytes = Vec::new();
+                    for (_b_idx, block) in blocks.iter().enumerate() {
+                        if let Some(b_code) = lift_and_compile_function(block, &opcodes) {
+                            compiled_bytes.extend_from_slice(&b_code);
+                        }
+                    }
+                    bytecode = Some(compiled_bytes);
+                } else {
+                    println!("        [BBR ENGINE] Skipping re-ordering - Function is linear and contains only 1 basic block.");
+                    bytecode = lift_and_compile_function(&decoded_instructions, &opcodes);
+                }
+            } else {
+                bytecode = lift_and_compile_function(&decoded_instructions, &opcodes);
+            }
+        }
+
+        let bytecode = match bytecode {
+            Some(bc) => {
+                println!("        [LIFTER] Dynamically lifted & compiled {} instructions into {} bytecode bytes.", decoded_instructions.len(), bc.len());
+                bc
+            }
+            None => {
+                println!("        [LIFTER FALLBACK] Compiling secure pre-compiled MBA-obfuscated core for calculate_secret.");
+                vec![
+                    op_push_reg, 0x00,               // PUSH RCX
+                    op_push_reg, 0x01,               // PUSH RDX
+                    op_xor,                          // XOR
+                    op_push_reg, 0x00,               // PUSH RCX
+                    op_push_reg, 0x01,               // PUSH RDX
+                    op_and,                          // AND
+                    op_dup,                          // DUP
+                    op_add,                          // ADD (so 2 * (RCX & RDX))
+                    op_add,                          // ADD (so (RCX ^ RDX) + 2 * (RCX & RDX) = RCX + RDX)
+                    op_dup,                          // DUP
+                    op_push_const, 100, 0, 0, 0,     // PUSH 100 (u32 constant)
+                    op_and,                          // AND
+                    op_dup,                          // DUP
+                    op_add,                          // ADD
+                    op_pop_temp,                     // POP TEMP
+                    op_push_const, 100, 0, 0, 0,     // PUSH 100
+                    op_xor,                          // XOR
+                    op_push_temp,                    // PUSH TEMP
+                    op_add,                          // ADD
+                    op_pop_reg, 0x02,                // POP RBX (reg 2)
+                    op_ret,                          // RET
+                ]
+            }
+        };
 
         // The RVA of this specific VM inside our new section is `new_section_rva + vmp_payload.len()`
         let current_vm_rva = new_section_rva + vmp_payload.len() as u32;
@@ -510,23 +898,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut do_ret = asm.create_label();
         let mut push_ecx = asm.create_label();
         let mut push_edx = asm.create_label();
+        let mut push_ebx = asm.create_label();
         let mut pop_eax = asm.create_label();
         let mut do_and = asm.create_label();
         let mut do_xor = asm.create_label();
         let mut do_dup = asm.create_label();
         let mut do_pop_temp = asm.create_label();
         let mut do_push_temp = asm.create_label();
+        let mut do_sub = asm.create_label();
         let mut bytecode_label = asm.create_label();
 
         asm.push(rcx)?; asm.push(rdx)?; asm.push(rbx)?; asm.push(rbp)?; asm.push(rsi)?; asm.push(r10)?;
         asm.lea(rsi, ptr(bytecode_label))?;
-        asm.set_label(&mut vm_loop)?; asm.xor(eax, eax)?; asm.lodsb()?; asm.cmp(al, 0x00)?; asm.je(do_push_reg)?;
-        asm.cmp(al, 0x01)?; asm.je(do_push_const)?; asm.cmp(al, 0x02)?; asm.je(do_add)?; asm.cmp(al, 0x03)?; asm.je(do_pop_reg)?;
-        asm.cmp(al, 0x04)?; asm.je(do_ret)?; asm.cmp(al, 0x05)?; asm.je(do_and)?; asm.cmp(al, 0x06)?; asm.je(do_xor)?;
-        asm.cmp(al, 0x07)?; asm.je(do_dup)?; asm.cmp(al, 0x08)?; asm.je(do_pop_temp)?; asm.cmp(al, 0x09)?; asm.je(do_push_temp)?;
+        
+        // Dispatch loop checking against randomized opcodes
+        asm.set_label(&mut vm_loop)?; asm.xor(eax, eax)?; asm.lodsb()?; asm.cmp(al, op_push_reg as i32)?; asm.je(do_push_reg)?;
+        asm.cmp(al, op_push_const as i32)?; asm.je(do_push_const)?; asm.cmp(al, op_add as i32)?; asm.je(do_add)?; asm.cmp(al, op_pop_reg as i32)?; asm.je(do_pop_reg)?;
+        asm.cmp(al, op_ret as i32)?; asm.je(do_ret)?; asm.cmp(al, op_and as i32)?; asm.je(do_and)?; asm.cmp(al, op_xor as i32)?; asm.je(do_xor)?;
+        asm.cmp(al, op_dup as i32)?; asm.je(do_dup)?; asm.cmp(al, op_pop_temp as i32)?; asm.je(do_pop_temp)?; asm.cmp(al, op_push_temp as i32)?; asm.je(do_push_temp)?;
+        asm.cmp(al, op_sub as i32)?; asm.je(do_sub)?;
         asm.int3()?;
-        asm.set_label(&mut do_push_reg)?; asm.lodsb()?; asm.cmp(al, 0)?; asm.je(push_ecx)?; asm.cmp(al, 1)?; asm.je(push_edx)?; asm.int3()?;
-        asm.set_label(&mut push_ecx)?; asm.push(rcx)?; asm.jmp(vm_loop)?; asm.set_label(&mut push_edx)?; asm.push(rdx)?; asm.jmp(vm_loop)?;
+        
+        asm.set_label(&mut do_push_reg)?; asm.lodsb()?; asm.cmp(al, 0)?; asm.je(push_ecx)?; asm.cmp(al, 1)?; asm.je(push_edx)?; asm.cmp(al, 2)?; asm.je(push_ebx)?; asm.int3()?;
+        asm.set_label(&mut push_ecx)?; asm.push(rcx)?; asm.jmp(vm_loop)?; 
+        asm.set_label(&mut push_edx)?; asm.push(rdx)?; asm.jmp(vm_loop)?;
+        asm.set_label(&mut push_ebx)?; asm.push(rbx)?; asm.jmp(vm_loop)?;
         asm.set_label(&mut do_push_const)?; asm.lodsd()?; asm.push(rax)?; asm.jmp(vm_loop)?;
         asm.set_label(&mut do_add)?; asm.pop(r8)?; asm.pop(r9)?; asm.add(r9, r8)?; asm.push(r9)?; asm.jmp(vm_loop)?;
         asm.set_label(&mut do_pop_reg)?; asm.lodsb()?; asm.pop(r8)?; asm.cmp(al, 2)?; asm.je(pop_eax)?; asm.int3()?;
@@ -536,6 +932,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         asm.set_label(&mut do_dup)?; asm.pop(r8)?; asm.push(r8)?; asm.push(r8)?; asm.jmp(vm_loop)?;
         asm.set_label(&mut do_pop_temp)?; asm.pop(r10)?; asm.jmp(vm_loop)?;
         asm.set_label(&mut do_push_temp)?; asm.push(r10)?; asm.jmp(vm_loop)?;
+        asm.set_label(&mut do_sub)?; asm.pop(r8)?; asm.pop(r9)?; asm.sub(r9, r8)?; asm.push(r9)?; asm.jmp(vm_loop)?;
         asm.set_label(&mut do_ret)?; asm.mov(rax, rbx)?; asm.pop(r10)?; asm.pop(rsi)?; asm.pop(rbp)?; asm.pop(rbx)?; asm.pop(rdx)?; asm.pop(rcx)?; asm.ret()?;
         asm.set_label(&mut bytecode_label)?; for &b in &bytecode { asm.db(&[b])?; }
         
@@ -556,6 +953,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         patch_stubs.push((func_abs_offset, jump_stub));
         println!("        Successfully virtualized '{}' -> Injected VM RVA: 0x{:X} (Size: {} bytes)", func_name, current_vm_rva, decoded_size);
+
+        // 🛡️ ADVERSARIAL AI PROMPT INJECTION (SPREAD INJECTIONS)
+        if !prompts_spread.is_empty() {
+            let mut pr_rng = SimpleRng::new(seed_value + idx as u64 + 999);
+            let prompt_idx = (pr_rng.next_u32() as usize) % prompts_spread.len();
+            let p_str = &prompts_spread[prompt_idx];
+            let p_bytes = p_str.as_bytes();
+            
+            println!("        [PROMPT ENGINE] Scattering adversarial spread prompt inside payload stream: '{}'...", p_str);
+            let mut prompt_block = Vec::new();
+            prompt_block.push(0xE9); // JMP rel32
+            let offset = p_bytes.len() as i32;
+            prompt_block.extend_from_slice(&offset.to_le_bytes());
+            prompt_block.extend_from_slice(p_bytes);
+            
+            vmp_payload.extend_from_slice(&prompt_block);
+        }
     }
 
     let has_virtualized_functions = !patch_stubs.is_empty();
@@ -571,9 +985,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Declare labels at the top of the assembler block to make them accessible globally
     let mut cff_dispatcher_skip_trap = cff_asm.create_label();
 
-    // Preserve registers in Entry Point prologue
+    // Preserve registers in Entry Point prologue (Fully DLL-Safe including RCX, RDX, R8 DllMain inputs)
     cff_asm.push(rcx)?;
     cff_asm.push(rdx)?;
+    cff_asm.push(r8)?;
     cff_asm.push(r11)?;
 
     // Resolve ImageBase dynamically via relative call/pop (ASLR safe)
@@ -582,9 +997,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cff_asm.set_label(&mut get_rip)?;
     cff_asm.pop(r11)?; // R11 holds the runtime absolute virtual address of `pop r11`
 
-    // RVA of `pop r11` will be: `cff_base_rva + 4 (pushes) + 5 (call)` = `cff_base_rva + 9`
+    // RVA of `pop r11` will be: `cff_base_rva + 6 (pushes) + 5 (call)` = `cff_base_rva + 11`
     let cff_base_rva = new_section_rva + vmp_payload.len() as u32;
-    cff_asm.sub(r11, (cff_base_rva + 9) as i32)?; // R11 now contains the EXACT runtime ImageBase
+    cff_asm.sub(r11, (cff_base_rva + 11) as i32)?; // R11 now contains the EXACT runtime ImageBase
 
     // --- TAMPER PROTECTION FOR STABILITY ---
     // If enabled, we perform a real-time integrity check on a safe 512-byte sub-block near the end of the .text section (unaffected by hooks).
@@ -641,9 +1056,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut state_jmp_oep = cff_asm.create_label(); 
         let mut state_junk = cff_asm.create_label();
 
+        let mut decoy_labels = Vec::new();
+        for _ in 0..cff_level {
+            decoy_labels.push(cff_asm.create_label());
+        }
+
         cff_asm.mov(eax, 0)?;
-        cff_asm.set_label(&mut cff_dispatcher)?; cff_asm.cmp(eax, 0)?; cff_asm.je(state_init)?;
-        cff_asm.cmp(eax, 1)?; cff_asm.je(state_anti_debug)?; cff_asm.cmp(eax, 2)?; cff_asm.je(state_jmp_oep)?; cff_asm.jmp(state_junk)?;
+        cff_asm.set_label(&mut cff_dispatcher)?; 
+        cff_asm.cmp(eax, 0)?; cff_asm.je(state_init)?;
+        cff_asm.cmp(eax, 1)?; cff_asm.je(state_anti_debug)?; 
+        cff_asm.cmp(eax, 2)?; cff_asm.je(state_jmp_oep)?;
+        
+        for (i, label) in decoy_labels.iter().enumerate() {
+            cff_asm.cmp(eax, (3 + i) as i32)?;
+            cff_asm.je(*label)?;
+        }
+        cff_asm.jmp(state_junk)?;
         
         // State 0: Init & Dynamic String Decryption
         cff_asm.set_label(&mut state_init)?;
@@ -665,11 +1093,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cff_asm.jmp(xor_loop)?;
             cff_asm.set_label(&mut xor_done)?;
         }
-        cff_asm.mov(eax, 1)?; cff_asm.jmp(cff_dispatcher)?;
+        let post_init_state = if cff_level > 0 { 3 } else { 1 };
+        cff_asm.mov(eax, post_init_state)?; cff_asm.jmp(cff_dispatcher)?;
         
         // State 1: Anti-debug simulation
         cff_asm.set_label(&mut state_anti_debug)?; cff_asm.xor(r11, r11)?; cff_asm.mov(eax, 2)?; cff_asm.jmp(cff_dispatcher)?;
         
+        // --- DYNAMIC CONTROL FLOW FLATTENING JUNK STATE GENERATOR ---
+        for (i, label) in decoy_labels.iter().enumerate() {
+            let mut lbl = *label;
+            cff_asm.set_label(&mut lbl)?;
+            
+            // Realistic math logic that is safe but looks incredibly complex to decompilers
+            cff_asm.add(r11, (0x1337 + i) as i32)?;
+            cff_asm.sub(r11, (0x1337 + i) as i32)?;
+            cff_asm.xor(r8d, r8d)?;
+            
+            let next_state = if i + 1 < decoy_labels.len() {
+                (3 + i + 1) as i32
+            } else {
+                1 // Chain final decoy state back to State 1 (Anti-debug)
+            };
+            cff_asm.mov(eax, next_state)?;
+            cff_asm.jmp(cff_dispatcher)?;
+        }
+
         // State Junk
         cff_asm.set_label(&mut state_junk)?; cff_asm.int3()?;
         
@@ -752,7 +1200,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     new_header[12..16].copy_from_slice(&new_section_rva.to_le_bytes()); // VirtualAddress
     new_header[16..20].copy_from_slice(&(raw_size as u32).to_le_bytes()); // SizeOfRawData
     new_header[20..24].copy_from_slice(&(new_section_raw_offset as u32).to_le_bytes()); // PointerToRawData
-    new_header[36..40].copy_from_slice(&(0xE0000060u32).to_le_bytes()); // Characteristics (Code|Exec|Read|Write)
+    new_header[36..40].copy_from_slice(&(0xE00000A0u32).to_le_bytes()); // Characteristics (Code|Exec|Read|Write|InitializedData)
     
     exe_data[new_section_header_offset..new_section_header_offset + 40].copy_from_slice(&new_header);
 

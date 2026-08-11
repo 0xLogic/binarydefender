@@ -184,7 +184,26 @@ Mixed Boolean Arithmetic (MBA) is a mathematically robust optimization pass (oft
 *   **Virtualization Impact:** When this heavily mutated IR is compiled down to VM bytecode, a single native `ADD` instruction explodes into a dense, tangled sequence of virtual `V_XOR`, `V_AND`, `V_SHL`, and `V_ADD` bytecode instructions.
 *   **Defense Mechanism:** MBA severely degrades the efficiency of Symbolic Execution and SMT solvers (like Z3), causing path explosion when reverse engineers attempt to lift the virtual bytecode back into logical constraints.
 
-### B. Compiler-Level vs. Post-Link Binary Virtualization
+### B. Control Flow Graph Shattering (Indirect Jumps & Opaque Predicates)
+Static analysis tools (such as IDA Pro or Ghidra) reconstruct software logic by parsing direct relative branches (`jmp rel32` or `call rel32`). Shattering this control-flow graph forces the decompiler to generate fragmented, unlinked code blocks.
+*   **Indirect Jumps:** Transforming direct calls into register-loaded dynamic variables calculated at runtime:
+    ```assembly
+    mov rax, 0x140011000    ; Obfuscated Base Pointer
+    xor rax, 0x5C3A9D12     ; Decryption math mask
+    call rax                ; Indirect branch execution
+    ```
+*   **Opaque Predicates:** Inserting conditional branches whose outcomes are invariant (known at compile-time) but mathematically difficult for static solvers to calculate beforehand, branching execution over blocks of dead, un-executable junk code to confuse analysts.
+
+### C. PE Import Obfuscation (API Import Hashing)
+A Portable Executable's Import Address Table (IAT) represents a functional blueprint of its capabilities. If system APIs (such as registry, networking, or memory functions) are left plain-text in the headers, static analysis immediately maps the program's capabilities.
+*   **Stripping plain-text references:** All Plaintext DLL and function name strings are completely stripped from the PE's Import Directory tables.
+*   **Process Environment Block (PEB) traversal:** At runtime, the injected decrypter trampoline manually walks the loaded library list (`InLoadOrderModuleList`) inside the active process memory:
+    ```
+    PEB (GS:[0x60]) ---> Module List ---> Walk DLL Export Address Tables (EAT)
+    ```
+*   **Dynamic Resolution:** The resolver hashes each exported name (using non-cryptographic hashes like `ROR13` or `MurmurHash3`) and compares it against pre-compiled hashes, resolving the procedure addresses dynamically at runtime without invoking standard `GetProcAddress`.
+
+### D. Compiler-Level vs. Post-Link Binary Virtualization
 Production-grade virtualizers (like VMProtect or custom Clang passes) operate at different stages of the build pipeline, drastically altering their complexity and reliability:
 
 1. **Compiler-Level Virtualization (LLVM / Clang-cl Pass):**
@@ -195,7 +214,7 @@ Production-grade virtualizers (like VMProtect or custom Clang passes) operate at
    *   **Mechanism:** Operates directly on the final compiled `.exe` or `.dll` machine bytes (the scope of traditional packers and protectors).
    *   **Challenge:** Raw machine code strips away structural data. A post-link virtualizer must guess the boundaries between code and data, reverse-engineer relative switch-case jump tables, and blindly emulate SEH scopes. This is notoriously fragile on arbitrary MSVC C++ binaries containing complex SIMD or x87 floating-point math.
 
-### C. The Role of Program Database (.pdb) Symbols
+### E. The Role of Program Database (.pdb) Symbols
 When performing Post-Link Binary Virtualization on MSVC executables, the `.pdb` file acts as the critical Rosetta Stone required for deterministic protection.
 *   **Exact Function Boundaries:** Provides the exact Relative Virtual Addresses (RVA) and sizes of functions, eliminating code-vs-data parsing errors.
 *   **Jump Table Resolution:** Explicitly maps structural compiler blocks and indirect switch-case jumps located in the `.rdata` section, allowing the lifter to safely capture and virtualize all control-flow targets.

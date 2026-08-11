@@ -112,27 +112,34 @@ fn find_function_rva_in_pdb(pdb_path: &str, func_name: &str) -> Result<u32, Box<
 
 // --- API IMPLEMENTATIONS ---
 
-// Scan target/release/ for matching .exe and .pdb file pairs
+// Scan target/release/ for matching .exe/.dll and .pdb file pairs
 fn get_binaries_json() -> String {
     let mut items = Vec::new();
     if let Ok(entries) = fs::read_dir("target/release") {
-        let mut exe_files = Vec::new();
+        let mut binary_files = Vec::new();
         let mut pdb_files = Vec::new();
         for entry in entries.flatten() {
             let name = entry.file_name().into_string().unwrap_or_default();
-            if name.ends_with(".exe") && name != "symbol_lister.exe" && name != "pe_protector.exe" && name != "sentinel_dashboard.exe" && name != "binarydefender.exe" {
-                exe_files.push(name);
-            } else if name.ends_with(".pdb") && name != "symbol_lister.pdb" && name != "pe_protector.pdb" && name != "sentinel_dashboard.pdb" && name != "binarydefender.pdb" {
+            let lower = name.to_lowercase();
+            if (lower.ends_with(".exe") || lower.ends_with(".dll")) && 
+               name != "symbol_lister.exe" && name != "pe_protector.exe" && name != "sentinel_dashboard.exe" && name != "binarydefender.exe" {
+                binary_files.push(name);
+            } else if lower.ends_with(".pdb") && 
+                      name != "symbol_lister.pdb" && name != "pe_protector.pdb" && name != "sentinel_dashboard.pdb" && name != "binarydefender.pdb" {
                 pdb_files.push(name);
             }
         }
-        for exe in exe_files {
-            let base_name = exe.strip_suffix(".exe").unwrap();
+        for bin in binary_files {
+            let base_name = if bin.to_lowercase().ends_with(".exe") {
+                bin.strip_suffix(".exe").unwrap().to_string()
+            } else {
+                bin.strip_suffix(".dll").unwrap().to_string()
+            };
             let pdb = format!("{}.pdb", base_name);
             if pdb_files.contains(&pdb) {
                 items.push(format!(
                     "{{\"exeName\":\"{}\",\"pdbName\":\"{}\",\"fullExePath\":\"target/release/{}\",\"fullPdbPath\":\"target/release/{}\"}}",
-                    exe, pdb, exe, pdb
+                    bin, pdb, bin, pdb
                 ));
             }
         }
@@ -253,6 +260,12 @@ fn execute_protect(body: &str) -> String {
     let hijack_enabled = get_json_bool_field(body, "hijackEnabled");
     let tamper_enabled = get_json_bool_field(body, "tamperEnabled"); // Extract new tamperEnabled state!
     let sec_name = get_json_string_field(body, "secName").unwrap_or_else(|| ".shield".to_string());
+    let obfuscation_level = get_json_string_field(body, "obfuscationLevel").unwrap_or_else(|| "HIGH".to_string());
+    let seed_value = get_json_string_field(body, "seed").unwrap_or_else(|| "3735928542".to_string());
+    let cff_level = get_json_string_field(body, "cffLevel").unwrap_or_else(|| "3".to_string());
+    let prompt_top = get_json_string_field(body, "promptTop").unwrap_or_default();
+    let prompts_spread = get_json_array_field(body, "promptsSpread");
+    let bbr_enabled = get_json_bool_field(body, "bbrEnabled");
 
     let input_exe = format!("target/release/{}", exe_name);
     let input_pdb = format!("target/release/{}", pdb_name);
@@ -271,6 +284,11 @@ fn execute_protect(body: &str) -> String {
     config_content.push_str(&format!("seh_enabled={}\n", seh_enabled));
     config_content.push_str(&format!("hijack_enabled={}\n", hijack_enabled));
     config_content.push_str(&format!("tamper_enabled={}\n", tamper_enabled)); // Pass tamper enabled!
+    config_content.push_str(&format!("obfuscation_level={}\n", obfuscation_level));
+    config_content.push_str(&format!("seed_value={}\n", seed_value));
+    config_content.push_str(&format!("cff_level={}\n", cff_level));
+    config_content.push_str(&format!("prompt_top={}\n", prompt_top));
+    config_content.push_str(&format!("bbr_enabled={}\n", bbr_enabled));
     
     config_content.push_str("[funcs]\n");
     for f in staged_funcs {
@@ -293,6 +311,11 @@ fn execute_protect(body: &str) -> String {
         for s in staged_strings {
             config_content.push_str(&format!("{}\n", s));
         }
+    }
+
+    config_content.push_str("[prompts_spread]\n");
+    for p in prompts_spread {
+        config_content.push_str(&format!("{}\n", p));
     }
 
     let config_path = "target/release/build_profile.txt";
