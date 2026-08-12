@@ -75,6 +75,44 @@ export default function App() {
   // Relative API routing since both static site and endpoints are served by the same Rust binary!
   const API_BASE = '/api';
 
+  const [targetDirectory, setTargetDirectory] = useState('');
+  const [dirStatus, setDirStatus] = useState('');
+
+  // Fetch target directory on startup
+  useEffect(() => {
+    fetch(`${API_BASE}/directory`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.directory) {
+          setTargetDirectory(data.directory);
+        }
+      })
+      .catch(err => console.error("Error loading directory path:", err));
+  }, []);
+
+  const handleSetDirectory = () => {
+    setDirStatus('Setting directory...');
+    fetch(`${API_BASE}/directory`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directory: targetDirectory })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setDirStatus('SUCCESS: Directory updated.');
+          setTargetDirectory(data.directory);
+          loadBinaries(); // Reload binaries from the new directory!
+        } else {
+          setDirStatus(`ERROR: ${data.error || 'Invalid directory.'}`);
+          if (data.directory) {
+            setTargetDirectory(data.directory);
+          }
+        }
+      })
+      .catch(err => setDirStatus(`ERROR: ${err.message}`));
+  };
+
   // Helper to dynamically compute instruction offsets under ASLR
   const formatOffset = (baseHex, offset) => {
     try {
@@ -553,6 +591,57 @@ export default function App() {
                     fontWeight: 'bold'
                   }}>
                     {uploadStatus}
+                  </p>
+                )}
+              </div>
+
+              {/* TARGET DIRECTORY SELECTOR IN PLATFORM (NEAR CHOOSE ACTIVE PE BINARY FILE) */}
+              <div style={{ marginBottom: '12px', borderBottom: '1px dashed var(--border-muted)', paddingBottom: '12px' }}>
+                <label style={{ display: 'block', color: 'var(--text-muted)', fontSize: '11px', marginBottom: '6px', letterSpacing: '1px' }}>
+                  TARGET BINARY DIRECTORY PATH
+                </label>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <input
+                    type="text"
+                    value={targetDirectory}
+                    onChange={(e) => setTargetDirectory(e.target.value)}
+                    placeholder="e.g. target/release"
+                    style={{
+                      flex: 1,
+                      padding: '8px',
+                      background: 'var(--bg-dark)',
+                      border: '1px solid var(--border-blue)',
+                      color: 'var(--text-primary)',
+                      outline: 'none',
+                      fontFamily: 'Share Tech Mono',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <button
+                    onClick={handleSetDirectory}
+                    style={{
+                      background: 'var(--sentinel-blue-dim)',
+                      border: '1px solid var(--sentinel-blue)',
+                      color: 'var(--sentinel-blue)',
+                      padding: '8px 12px',
+                      cursor: 'pointer',
+                      fontFamily: 'Share Tech Mono',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                    }}
+                  >
+                    SET
+                  </button>
+                </div>
+                {dirStatus && (
+                  <p style={{
+                    color: dirStatus.startsWith('ERROR') ? '#ff1744' : 'var(--text-green)',
+                    fontSize: '11px',
+                    marginTop: '6px',
+                    fontWeight: 'bold',
+                    fontFamily: 'Share Tech Mono',
+                  }}>
+                    {dirStatus}
                   </p>
                 )}
               </div>

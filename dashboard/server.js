@@ -3,6 +3,7 @@ import cors from 'cors';
 import { exec, execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 const app = express();
 const PORT = 3001;
@@ -10,9 +11,35 @@ const PORT = 3001;
 app.use(cors());
 app.use(express.json());
 
-// Resolve workspace paths
-const targetReleaseDir = path.resolve('../target/release');
-const projectRootDir = path.resolve('..');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Helper to determine the target release folder dynamically
+let targetReleaseDir = path.resolve(__dirname, '../target/release');
+let projectRootDir = path.resolve(__dirname, '..');
+
+// Fallback auto-detection if target/release is missing
+if (!fs.existsSync(targetReleaseDir)) {
+    // Check if the current workspace root has it or fallback to the local folder
+    if (fs.existsSync(path.resolve(__dirname, '.'))) {
+        targetReleaseDir = path.resolve(__dirname, '.');
+    }
+}
+
+// Accept command line argument to set directory: --dir <path> or -d <path>
+const args = process.argv.slice(2);
+for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--dir' || args[i] === '-d') {
+        if (args[i + 1]) {
+            targetReleaseDir = path.resolve(args[i + 1]);
+        } else {
+            console.error('Error: --dir or -d requires a directory path.');
+            process.exit(1);
+        }
+    }
+}
+
+console.log(`[SENTINEL DASHBOARD] Using target binary directory: ${targetReleaseDir}`);
 
 // Helper to extract printable ASCII strings from any binary file
 function extractPrintableStrings(filePath, minLength = 6) {

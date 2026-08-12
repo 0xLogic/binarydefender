@@ -3,7 +3,29 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
+use std::sync::RwLock;
 use iced_x86::{Decoder, DecoderOptions, Formatter, NasmFormatter};
+
+// Thread-safe mutable custom or auto-detected binary search directory
+static TARGET_DIR: RwLock<String> = RwLock::new(String::new());
+
+fn get_target_dir() -> String {
+    let mut dir = TARGET_DIR.read().unwrap().clone();
+    if dir.is_empty() {
+        let resolved = if fs::metadata("target/release").is_ok() {
+            "target/release".to_string()
+        } else {
+            ".".to_string()
+        };
+        *TARGET_DIR.write().unwrap() = resolved.clone();
+        dir = resolved;
+    }
+    dir
+}
+
+fn set_target_dir(new_dir: String) {
+    *TARGET_DIR.write().unwrap() = new_dir;
+}
 
 // Embedded static assets compiled directly into our single binary! (V2.7 - FORCE CACHE BUSTER)
 const INDEX_HTML: &str = include_str!("../../dashboard/dist/index.html");
@@ -112,10 +134,11 @@ fn find_function_rva_in_pdb(pdb_path: &str, func_name: &str) -> Result<u32, Box<
 
 // --- API IMPLEMENTATIONS ---
 
-// Scan target/release/ for matching .exe/.dll and .pdb file pairs
+// Scan dynamic target directory for matching .exe/.dll and .pdb file pairs
 fn get_binaries_json() -> String {
     let mut items = Vec::new();
-    if let Ok(entries) = fs::read_dir("target/release") {
+    let target_dir = get_target_dir();
+    if let Ok(entries) = fs::read_dir(&target_dir) {
         let mut binary_files = Vec::new();
         let mut pdb_files = Vec::new();
         for entry in entries.flatten() {
@@ -131,15 +154,15 @@ fn get_binaries_json() -> String {
         }
         for bin in binary_files {
             let base_name = if bin.to_lowercase().ends_with(".exe") {
-                bin.strip_suffix(".exe").unwrap().to_string()
+                bin.strip_suffix(".exe").unwrap_or(&bin).to_string()
             } else {
-                bin.strip_suffix(".dll").unwrap().to_string()
+                bin.strip_suffix(".dll").unwrap_or(&bin).to_string()
             };
             let pdb = format!("{}.pdb", base_name);
             if pdb_files.contains(&pdb) {
                 items.push(format!(
-                    "{{\"exeName\":\"{}\",\"pdbName\":\"{}\",\"fullExePath\":\"target/release/{}\",\"fullPdbPath\":\"target/release/{}\"}}",
-                    bin, pdb, bin, pdb
+                    "{{\"exeName\":\"{}\",\"pdbName\":\"{}\",\"fullExePath\":\"{}/{}\",\"fullPdbPath\":\"{}/{}\"}}",
+                    bin, pdb, target_dir, bin, target_dir, pdb
                 ));
             }
         }
@@ -149,7 +172,7 @@ fn get_binaries_json() -> String {
 
 // Parse PDB symbols directly in Rust using the PDB crate
 fn get_symbols_json(pdb_name: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let pdb_path = format!("target/release/{}", pdb_name);
+    let pdb_path = format!("{}/{}", get_target_dir(), pdb_name);
     let file = fs::File::open(pdb_path)?;
     let mut pdb = pdb::PDB::open(file)?;
     
@@ -190,7 +213,7 @@ fn get_symbols_json(pdb_name: &str) -> Result<String, Box<dyn std::error::Error>
 
 // Scan executable buffer for printable ASCII strings natively (no Node dependency)
 fn get_strings_json(exe_name: &str) -> String {
-    let exe_path = format!("target/release/{}", exe_name);
+    let exe_path = format!("{}/{}", get_target_dir(), exe_name);
     if let Ok(buffer) = fs::read(exe_path) {
         let mut strings = Vec::new();
         let mut current = Vec::new();
@@ -240,9 +263,9 @@ fn handle_upload(body: &str) -> String {
         return "{\"success\":false,\"error\":\"Empty or invalid file streams.\"}".to_string();
     }
 
-    // Write directly to target/release using generic target filenames
-    fs::write("target/release/uploaded_target.exe", exe_bytes).ok();
-    fs::write("target/release/uploaded_target.pdb", pdb_bytes).ok();
+    // Write directly to target directory using generic target filenames
+    fs::write(format!("{}/uploaded_target.exe", get_target_dir()), exe_bytes).ok();
+    fs::write(format!("{}/uploaded_target.pdb", get_target_dir()), pdb_bytes).ok();
 
     println!("[SENTINEL DASHBOARD] Successfully staged uploaded assets!");
     "{\"success\":true}".to_string()
@@ -267,12 +290,12 @@ fn execute_protect(body: &str) -> String {
     let prompts_spread = get_json_array_field(body, "promptsSpread");
     let bbr_enabled = get_json_bool_field(body, "bbrEnabled");
 
-    let input_exe = format!("target/release/{}", exe_name);
-    let input_pdb = format!("target/release/{}", pdb_name);
+    let input_exe = format!("{}/{}", get_target_dir(), exe_name);
+    let input_pdb = format!("{}/{}", get_target_dir(), pdb_name);
     
     let base_name = exe_name.strip_suffix(".exe").unwrap_or(&exe_name);
     let output_file_name = format!("{}_protected.exe", base_name);
-    let output_exe = format!("target/release/{}", output_file_name);
+    let output_exe = format!("{}/{}", get_target_dir(), output_file_name);
 
     // Create flat text-file config to bypass Windows command line buffer limits
     let mut config_content = String::new();
@@ -318,14 +341,14 @@ fn execute_protect(body: &str) -> String {
         config_content.push_str(&format!("{}\n", p));
     }
 
-    let config_path = "target/release/build_profile.txt";
-    if let Err(e) = fs::write(config_path, config_content) {
+    let config_path = format!("{}/build_profile.txt", get_target_dir());
+    if let Err(e) = fs::write(&config_path, config_content) {
         return format!("{{\"success\":false,\"stdout\":\"\",\"stderr\":\"Failed to write compiler profile: {}\"}}", e);
     }
 
     let args = vec![
         "run".to_string(), "--bin".to_string(), "pe_protector".to_string(), "--".to_string(),
-        "-c".to_string(), config_path.to_string(),
+        "-c".to_string(), config_path.clone(),
     ];
 
     println!("[SENTINEL DASHBOARD] Spawning protector pass with args: {:?}", args);
@@ -370,8 +393,8 @@ fn execute_protect(body: &str) -> String {
 
 // --- DYNAMIC CONTROL FLOW GRAPH (CFG) DISASSEMBLER ---
 fn get_cfg_json(exe_name: &str, func_name: &str, pdb_name: &str) -> String {
-    let exe_path = format!("target/release/{}", exe_name);
-    let pdb_path = format!("target/release/{}", pdb_name);
+    let exe_path = format!("{}/{}", get_target_dir(), exe_name);
+    let pdb_path = format!("{}/{}", get_target_dir(), pdb_name);
     
     // 1. Find function RVA from PDB
     let func_rva = match find_function_rva_in_pdb(&pdb_path, func_name) {
@@ -551,6 +574,37 @@ fn handle_connection(mut stream: TcpStream) {
             INDEX_CSS.len(), INDEX_CSS
         );
         stream.write_all(response.as_bytes()).ok();
+    } else if method == "GET" && path.starts_with("/api/directory") {
+        let current_dir = get_target_dir();
+        let json = format!("{{\"directory\":\"{}\"}}", current_dir.replace("\\", "\\\\").replace("\"", "\\\""));
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            json.len(), json
+        );
+        stream.write_all(response.as_bytes()).ok();
+    } else if method == "POST" && path.starts_with("/api/directory") {
+        let dir_val = get_json_string_field(&body_str, "directory").unwrap_or_default();
+        let mut success = false;
+        if !dir_val.is_empty() {
+            if fs::metadata(&dir_val).is_ok() {
+                set_target_dir(dir_val.clone());
+                println!("[SENTINEL DASHBOARD] Target directory dynamically set to: {}", dir_val);
+                success = true;
+            } else {
+                println!("[SENTINEL DASHBOARD] Failed to set directory: '{}' does not exist or is inaccessible.", dir_val);
+            }
+        }
+        let current_dir = get_target_dir();
+        let json = format!(
+            "{{\"success\":{},\"directory\":\"{}\"}}",
+            success,
+            current_dir.replace("\\", "\\\\").replace("\"", "\\\"")
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            json.len(), json
+        );
+        stream.write_all(response.as_bytes()).ok();
     } else if method == "GET" && path.starts_with("/api/binaries") {
         let json = get_binaries_json();
         let response = format!(
@@ -589,7 +643,7 @@ fn handle_connection(mut stream: TcpStream) {
         stream.write_all(response.as_bytes()).ok();
     } else if method == "GET" && path.starts_with("/api/download") {
         let filename = path.split("file=").nth(1).unwrap_or("uploaded_target_protected.exe").split('&').next().unwrap_or("uploaded_target_protected.exe");
-        let file_path = format!("target/release/{}", filename);
+        let file_path = format!("{}/{}", get_target_dir(), filename);
         if let Ok(file_data) = fs::read(&file_path) {
             let response_headers = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nContent-Disposition: attachment; filename=\"{}\"\r\nConnection: close\r\n\r\n",
@@ -622,6 +676,34 @@ fn handle_connection(mut stream: TcpStream) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut custom_dir = None;
+    let args: Vec<String> = std::env::args().collect();
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--dir" || args[i] == "-d" {
+            if i + 1 < args.len() {
+                custom_dir = Some(args[i + 1].clone());
+                i += 2;
+            } else {
+                eprintln!("Error: --dir or -d requires a directory path.");
+                std::process::exit(1);
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    if let Some(dir) = custom_dir {
+        if fs::metadata(&dir).is_err() {
+            println!("[WARNING] Specified directory '{}' does not exist or is inaccessible.", dir);
+        } else {
+            println!("[SENTINEL DASHBOARD] Using custom directory: {}", dir);
+        }
+        set_target_dir(dir);
+    } else {
+        println!("[SENTINEL DASHBOARD] Auto-resolved target directory: {}", get_target_dir());
+    }
+
     let port = 3002;
     println!("+-------------------------------------------------------------+");
     println!("|             BINARYDEFENDER // SENTINEL INTERFACE            |");
